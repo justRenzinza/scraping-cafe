@@ -1,0 +1,11 @@
+{
+	"rewrites": [
+		{ "source": "/api/scraper", "destination": "/api/scraper.py" }
+	],
+	"crons": [
+		{
+			"path": "/api/scraper",
+			"schedule": "0 10 * * 1-5"
+		}
+	]
+}
