@@ -6,7 +6,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler
 
 
-WEBHOOK_URL = "https://forecited-brittni-sequential.ngrok-free.dev/api/integrations/sacex/price-entries"
+WEBHOOK_URL = "https://dev.api.paineldoprodutor.com.br"
 BEARER_TOKEN = os.environ.get("BEARER_TOKEN", "")
 
 MAPEAMENTO_PRODUTOS = {
