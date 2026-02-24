@@ -18,6 +18,26 @@ MAPEAMENTO_PRODUTOS = {
 
 
 # =========================================================
+# HELPER - Scraper com fallback de erro
+# =========================================================
+def scrape_com_fallback(fn, nome):
+    try:
+        return fn()
+    except requests.exceptions.Timeout:
+        print(f"[ERRO] {nome}: Timeout ao acessar o site")
+        return []
+    except requests.exceptions.ConnectionError:
+        print(f"[ERRO] {nome}: Falha de conexão")
+        return []
+    except requests.exceptions.HTTPError as e:
+        print(f"[ERRO] {nome}: HTTP {e.response.status_code}")
+        return []
+    except Exception as e:
+        print(f"[ERRO] {nome}: {e}")
+        return []
+
+
+# =========================================================
 # SITE 1 - Cooabriel
 # =========================================================
 def scrape_cooabriel():
@@ -215,7 +235,13 @@ def calcular_medias_por_produto(dados):
 # ENVIAR WEBHOOK
 # =========================================================
 def enviar_webhook(medias):
-    external_event_id = datetime.now().timetuple().tm_yday  # dia do ano (1-365)
+    if not medias:
+        return [{"aviso": "Nenhum dado coletado, webhook não enviado"}]
+
+    if not BEARER_TOKEN:
+        return [{"aviso": "BEARER_TOKEN não configurado, webhook não enviado"}]
+
+    external_event_id = datetime.now().timetuple().tm_yday
 
     headers = {
         "Authorization": f"Bearer {BEARER_TOKEN}",
@@ -226,6 +252,11 @@ def enviar_webhook(medias):
     for produto, preco_medio in medias.items():
         mapeamento = MAPEAMENTO_PRODUTOS.get(produto)
         if not mapeamento:
+            resultados.append({
+                "produto": produto,
+                "status": "ignorado",
+                "resposta": "Produto não mapeado"
+            })
             continue
 
         payload = {
@@ -239,19 +270,66 @@ def enviar_webhook(medias):
             "value": round(preco_medio, 2)
         }
 
-        try:
-            r = requests.post(WEBHOOK_URL, json=payload, headers=headers, timeout=10)
-            resultados.append({
-                "produto": produto,
-                "status": r.status_code,
-                "resposta": r.text
-            })
-        except Exception as e:
-            resultados.append({
-                "produto": produto,
-                "status": "erro",
-                "resposta": str(e)
-            })
+        sucesso = False
+        for tentativa in range(2):
+            try:
+                r = requests.post(WEBHOOK_URL, json=payload, headers=headers, timeout=10)
+
+                if r.status_code == 401:
+                    resultados.append({
+                        "produto": produto,
+                        "status": 401,
+                        "resposta": "Token inválido ou não autorizado"
+                    })
+                    sucesso = True
+                    break
+                elif r.status_code == 422:
+                    resultados.append({
+                        "produto": produto,
+                        "status": 422,
+                        "resposta": f"Payload inválido: {r.text}"
+                    })
+                    sucesso = True
+                    break
+                elif r.status_code >= 500:
+                    if tentativa == 0:
+                        print(f"[WEBHOOK] {produto}: Erro 5xx, tentando novamente...")
+                        continue
+                    resultados.append({
+                        "produto": produto,
+                        "status": r.status_code,
+                        "resposta": f"Erro no servidor do webhook após 2 tentativas"
+                    })
+                else:
+                    resultados.append({
+                        "produto": produto,
+                        "status": r.status_code,
+                        "resposta": r.text
+                    })
+                    sucesso = True
+                    break
+
+            except requests.exceptions.Timeout:
+                if tentativa == 1:
+                    resultados.append({
+                        "produto": produto,
+                        "status": "erro",
+                        "resposta": "Timeout ao enviar webhook após 2 tentativas"
+                    })
+            except requests.exceptions.ConnectionError:
+                if tentativa == 1:
+                    resultados.append({
+                        "produto": produto,
+                        "status": "erro",
+                        "resposta": "Falha de conexão ao enviar webhook"
+                    })
+            except Exception as e:
+                resultados.append({
+                    "produto": produto,
+                    "status": "erro",
+                    "resposta": str(e)
+                })
+                break
 
     return resultados
 
@@ -261,10 +339,12 @@ def enviar_webhook(medias):
 # =========================================================
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
+        erros_scraping = []
+
         todos_dados = []
-        todos_dados += scrape_cooabriel()
-        todos_dados += scrape_cccv()
-        todos_dados += scrape_noticias_agricolas_arabica_duro()
+        todos_dados += scrape_com_fallback(scrape_cooabriel, "Cooabriel")
+        todos_dados += scrape_com_fallback(scrape_cccv, "CCCV")
+        todos_dados += scrape_com_fallback(scrape_noticias_agricolas_arabica_duro, "NoticiasAgricolas")
 
         medias = calcular_medias_por_produto(todos_dados)
         webhook_resultados = enviar_webhook(medias)
@@ -272,6 +352,7 @@ class handler(BaseHTTPRequestHandler):
         resultado = {
             "gerado_em": datetime.now().strftime("%d/%m/%Y %H:%M"),
             "external_event_id": datetime.now().timetuple().tm_yday,
+            "total_cotacoes": len(todos_dados),
             "cotacoes": todos_dados,
             "medias": medias,
             "webhook": webhook_resultados
